@@ -26,6 +26,9 @@ int main() {
         WSACleanup();
         return 1;
     }
+    else{
+        std::cout << "CONNECTED TO SERVER";
+    }
 
     //this is where the interesting stuff happens
     //to-do: ask for user input until EXIT command or something
