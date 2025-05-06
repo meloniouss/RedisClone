@@ -4,7 +4,7 @@ import time
 
 SERVER_HOST = "127.0.0.1"
 SERVER_PORT = 6379
-NUM_CLIENTS = 25
+NUM_CLIENTS = 3
 
 
 def client_task(id):

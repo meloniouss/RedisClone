@@ -8,6 +8,7 @@
 //
 std::vector<std::string> generateCommands(const char charBuffer[1024]);
 std::string handleIndividualWord(const char charBuffer[1024], int* wordIndex);
+void sendData(std::vector<std::string> commands, int client_socket);
 
 int main() {
   // boilerplate
@@ -85,15 +86,11 @@ int main() {
             break;
           }
           std::vector<std::string> commands = generateCommands(buffer);
-          std::cout << "Generated command are: " << std::endl;
+          std::cout << "Generated commands are: " << std::endl;
           for (const auto& command : commands) {
             std::cout << command << std::endl;
           }
-          std::cout << "Client ("<< client_socket<<") message: " << "PING" << std::endl;
-          //
-          // need to add data sending function here
-          //
-          send(client_socket, "PONG", strlen("PONG"), 0);
+          sendData(commands, client_socket);
         }
       }
     }
@@ -103,20 +100,51 @@ int main() {
   return 0;
 }
 
+void sendData(std::vector<std::string> commands, int client_socket){
+  int number_of_commands = commands.size();
+  if(number_of_commands == 0)
+  {
+    std::cerr << "ERROR: Invalid Command" << std::endl;
+  }
+  std::string mainCommand = commands[0];
+  std::stringstream return_data;
+  if(mainCommand == "ECHO")
+  {
+    return_data << "$";
+    return_data << std::to_string(commands[1].length());
+    return_data << "\r\n";
+    return_data << commands[1];
+    return_data << "\r\n";
+    std::cout << return_data.str();
+    std::string response = return_data.str();
+    send(client_socket, response.c_str(), response.length(), 0);
+  }
+}
+
+
 std::string handleIndividualWord(const char charBuffer[1024], int* wordIndex)
 {
   std::stringstream builder;
-  std::cout << "Starting to process from char: " << charBuffer[*wordIndex]<< std::endl;
-  int dataLength = charBuffer[*wordIndex + 1];
-  for(int i = 0; i < dataLength; i++){
-    (*wordIndex)++; //used to track position in the buffer
-    if(charBuffer[i] == '\r'|| charBuffer[i] == '\n'){
-      continue;
-    }
-    else{
-      builder << charBuffer[i];
-    }
+  std::cout << "char buffer in individual thingy: " << charBuffer << std::endl;
+  std::cout << "Starting to process from char: " << charBuffer[*wordIndex]<< std::endl; 
+  ++(*wordIndex);
+  std::string cmdLen;
+  while(charBuffer[(*wordIndex)] != '\r')
+  {
+    cmdLen += charBuffer[(*wordIndex)];
+    std::cout << "CURRENT CHAR: " <<charBuffer[*wordIndex] << std::endl;
+    ++(*wordIndex);
   }
+  std::cout << "command length (individual word) : " << cmdLen << std::endl;
+  int dataLength = std::stoi(cmdLen);
+  ++(*wordIndex); 
+  ++(*wordIndex); //eliminates need to skip r and n in loop
+  for(int i = 0; i < dataLength; i++){
+      builder << charBuffer[*wordIndex];
+      ++(*wordIndex);
+  }
+  ++(*wordIndex);
+  ++(*wordIndex); 
   std::cout << "Individual word: " << builder.str() << std::endl;
   return builder.str();
 }
@@ -125,8 +153,17 @@ std::vector<std::string> generateCommands(const char charBuffer[1024]){
   std::cout << "Received Buffer: " << charBuffer << std::endl;
   std::vector<std::string> commandList;
   if(charBuffer[0] == '*'){
-    int commandLength = (int) charBuffer[1];
-    int* wordIndex = new int(4);// we skip *length\r\n so index is 4
+
+    int i = 1;
+    std::string bufferCmdLen;
+    while (charBuffer[i] != '\r' && i < 1024) {
+      bufferCmdLen += charBuffer[i];
+      ++i;
+    }
+    int commandLength = std::stoi(bufferCmdLen);
+
+    int* wordIndex = new int(commandLength+2); //skip return and newline
+    std::cout << "Command length is: " << commandLength << std::endl;
     while(commandList.size() < commandLength){
      std::cout << "CALLING INDIVIDUAL WORD FUNCTION" << std::endl;
      commandList.push_back(handleIndividualWord(charBuffer, wordIndex));
