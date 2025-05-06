@@ -3,6 +3,12 @@
 #include <winsock2.h>
 #include <vector>
 #include <algorithm>
+#include <sstream>
+//prototypes
+//
+std::vector<std::string> generateCommands(const char charBuffer[1024]);
+std::string handleIndividualWord(const char charBuffer[1024], int* wordIndex);
+
 int main() {
   // boilerplate
   WSADATA wsaData;
@@ -19,7 +25,7 @@ int main() {
   }
   sockaddr_in server_addr;
   server_addr.sin_family = AF_INET;
-  server_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+  server_addr.sin_addr.s_addr = INADDR_ANY;
   server_addr.sin_port = htons(6379);
   if (bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) ==
       SOCKET_ERROR) {
@@ -72,14 +78,16 @@ int main() {
         {
           char buffer[1024] = {0};
           int data_received = recv(client_socket, buffer, sizeof(buffer) - 1, 0); // num of bytes
-          //
-          // gonna add the RESP parsing function here
-          //
           if (data_received <= 0) { //means TCP connection closed gracefully
             CLIENT_SOCKET_LIST.erase(CLIENT_SOCKET_LIST.begin() + i);
             FD_CLR(client_socket, &clientSet);
             closesocket(client_socket);
             break;
+          }
+          std::vector<std::string> commands = generateCommands(buffer);
+          std::cout << "Generated command are: " << std::endl;
+          for (const auto& command : commands) {
+            std::cout << command << std::endl;
           }
           std::cout << "Client ("<< client_socket<<") message: " << "PING" << std::endl;
           //
@@ -94,3 +102,42 @@ int main() {
   WSACleanup();
   return 0;
 }
+
+std::string handleIndividualWord(const char charBuffer[1024], int* wordIndex)
+{
+  std::stringstream builder;
+  std::cout << "Starting to process from char: " << charBuffer[*wordIndex]<< std::endl;
+  int dataLength = charBuffer[*wordIndex + 1];
+  for(int i = 0; i < dataLength; i++){
+    (*wordIndex)++; //used to track position in the buffer
+    if(charBuffer[i] == '\r'|| charBuffer[i] == '\n'){
+      continue;
+    }
+    else{
+      builder << charBuffer[i];
+    }
+  }
+  std::cout << "Individual word: " << builder.str() << std::endl;
+  return builder.str();
+}
+  
+std::vector<std::string> generateCommands(const char charBuffer[1024]){
+  std::cout << "Received Buffer: " << charBuffer << std::endl;
+  std::vector<std::string> commandList;
+  if(charBuffer[0] == '*'){
+    int commandLength = (int) charBuffer[1];
+    int* wordIndex = new int(4);// we skip *length\r\n so index is 4
+    while(commandList.size() < commandLength){
+     std::cout << "CALLING INDIVIDUAL WORD FUNCTION" << std::endl;
+     commandList.push_back(handleIndividualWord(charBuffer, wordIndex));
+    }
+    delete wordIndex;
+  }
+  return commandList;
+}
+
+
+
+
+
+
