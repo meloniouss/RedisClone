@@ -4,13 +4,18 @@
 #include <vector>
 #include <algorithm>
 #include <sstream>
+#include <map>
 //prototypes
 //
 std::vector<std::string> generateCommands(const char charBuffer[1024]);
 std::string handleIndividualWord(const char charBuffer[1024], int* wordIndex);
 void sendData(std::vector<std::string> commands, int client_socket);
 
+static std::map<std::string, std::string> dataStore;
+
 int main() {
+
+
   // boilerplate
   WSADATA wsaData;
   int wsaInit = WSAStartup(MAKEWORD(2, 2), &wsaData);
@@ -100,6 +105,10 @@ int main() {
   return 0;
 }
 
+void toLowercase(std::string& str) {
+    std::transform(str.begin(), str.end(), str.begin(), [](unsigned char c) { return std::tolower(c); });
+}
+
 void sendData(std::vector<std::string> commands, int client_socket){
   int number_of_commands = commands.size();
   if(number_of_commands == 0)
@@ -108,8 +117,8 @@ void sendData(std::vector<std::string> commands, int client_socket){
   }
   std::string mainCommand = commands[0];
   std::stringstream return_data;
-  if(mainCommand == "ECHO")
-  {
+  toLowercase(mainCommand);
+  if(mainCommand == "echo"){
     return_data << "$";
     return_data << std::to_string(commands[1].length());
     return_data << "\r\n";
@@ -119,8 +128,52 @@ void sendData(std::vector<std::string> commands, int client_socket){
     std::string response = return_data.str();
     send(client_socket, response.c_str(), response.length(), 0);
   }
+  else if(mainCommand == "set"){
+    if(commands.size() < 3){
+      std::string response = "-ERR wrong number of arguments for 'SET'\r\n";
+      send(client_socket, response.c_str(), response.length(), 0);
+      return;
+    }
+    dataStore.emplace(commands[1],commands[2]);
+    std::string response = "+OK\r\n";
+    send(client_socket, response.c_str(), response.length(),0);
+  }
+  else if(mainCommand == "get"){
+    if(commands.size() < 2){
+      std::string response = "-ERR wrong number of arguments for 'GET'\r\n";
+      send(client_socket, response.c_str(), response.length(), 0);
+      return;
+    }
+    auto it = dataStore.find(commands[1]);
+    if(it != dataStore.end()){
+      return_data.str("");
+      return_data.clear();
+      return_data << "$";
+      return_data << std::to_string(it->second.length());
+      return_data << "\r\n";
+      return_data << it->second;
+      return_data << "\r\n";
+      std::cout << return_data.str();
+      std::string response = return_data.str();
+      send(client_socket, response.c_str(), response.length(), 0);
+    }
+    else{
+      std::string response = "$-1\r\n";
+      send(client_socket, response.c_str(), response.length(),0);
+    }
+  }
+  else if(mainCommand == "command"){ //temp. fix for the redis-cli not wanting to connect
+    if(commands.size() < 2){
+      std::string response = "-ERR wrong number of arguments for 'GET'\r\n";
+      send(client_socket, response.c_str(), response.length(), 0);
+      return;
+    }
+    else{
+      std::string response = "+OK\r\n";
+      send(client_socket, response.c_str(), response.length(),0);
+    }
+  }
 }
-
 
 std::string handleIndividualWord(const char charBuffer[1024], int* wordIndex)
 {
@@ -128,10 +181,13 @@ std::string handleIndividualWord(const char charBuffer[1024], int* wordIndex)
   std::cout << "char buffer in individual thingy: " << charBuffer << std::endl;
   std::cout << "Starting to process from char: " << charBuffer[*wordIndex]<< std::endl; 
   ++(*wordIndex);
+  std::cout << "wordIndex after increment: " << *wordIndex << std::endl;
   std::string cmdLen;
-  while(charBuffer[(*wordIndex)] != '\r')
+  while(charBuffer[(*wordIndex)] != '\r' && *wordIndex < 1024)
   {
+    std::cout << "word index: " << *wordIndex << std::endl;
     cmdLen += charBuffer[(*wordIndex)];
+    std::cout << "cmdLen = " << cmdLen << std::endl;
     std::cout << "CURRENT CHAR: " <<charBuffer[*wordIndex] << std::endl;
     ++(*wordIndex);
   }
@@ -150,7 +206,7 @@ std::string handleIndividualWord(const char charBuffer[1024], int* wordIndex)
 }
   
 std::vector<std::string> generateCommands(const char charBuffer[1024]){
-  std::cout << "Received Buffer: " << charBuffer << std::endl;
+  std::cout << "Received Buffer: \n" << charBuffer << std::endl;
   std::vector<std::string> commandList;
   if(charBuffer[0] == '*'){
 
@@ -162,7 +218,9 @@ std::vector<std::string> generateCommands(const char charBuffer[1024]){
     }
     int commandLength = std::stoi(bufferCmdLen);
 
-    int* wordIndex = new int(commandLength+2); //skip return and newline
+    int* wordIndex = new int(i+2); //skip return and newline
+    std::cout << "STARTING WORD INDEX IS: " << *wordIndex << std::endl;
+    std::cout << "CHAR AT SAID INDEX IS: " << charBuffer[*wordIndex] << std::endl;
     std::cout << "Command length is: " << commandLength << std::endl;
     while(commandList.size() < commandLength){
      std::cout << "CALLING INDIVIDUAL WORD FUNCTION" << std::endl;
