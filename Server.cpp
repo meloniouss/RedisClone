@@ -4,17 +4,45 @@
 #include <vector>
 #include <algorithm>
 #include <sstream>
-#include <map>
+#include <unordered_map>
+#include <chrono>
 //prototypes
-//
 std::vector<std::string> generateCommands(const char charBuffer[1024]);
 std::string handleIndividualWord(const char charBuffer[1024], int* wordIndex);
 void sendData(std::vector<std::string> commands, int client_socket);
 
-static std::map<std::string, std::string> dataStore;
+struct keyInfo {
+  std::string value;
+  std::chrono::system_clock::time_point timestamp;
+  std::chrono::milliseconds ttl;
+};
+
+static std::unordered_map<std::string, keyInfo> dataStore;
+
+void setKey(std::string key, std::string value, std::string ttl)
+{
+  keyInfo key_Value{
+  value,
+  std::chrono::system_clock::now(),
+  std::chrono::milliseconds(std::stoi(ttl))
+  };
+  dataStore.emplace(key, key_Value);
+}
+
+std::string getKeyValue(std::string key){
+  auto it = dataStore.find(key);
+  if(it != dataStore.end()){
+    auto expiryTime = (it->second.timestamp + it->second.ttl);
+    auto currentTime = std::chrono::system_clock::now();
+    if(it->second.ttl == std::chrono::milliseconds(-1) || currentTime < expiryTime){ //if ttl = -1 -> not meant to expire at all
+      return it->second.value;
+    }
+  }
+  dataStore.erase(key);
+  return ""; //check for empty string in the command function
+}
 
 int main() {
-
 
   // boilerplate
   WSADATA wsaData;
@@ -62,7 +90,6 @@ int main() {
       FD_SET(client_socket, &clientSet);
     }
     int FILE_READY = select(0, &clientSet, NULL, NULL, NULL);
-    //std::cout << FILE_READY;
     if(FILE_READY > 0){
       if(FD_ISSET(server_fd, &clientSet)){ //checks if server_fd part of clientSet & ready to be read/written (if it has been marked by SELECT)
         sockaddr_in client_addr;
@@ -134,9 +161,26 @@ void sendData(std::vector<std::string> commands, int client_socket){
       send(client_socket, response.c_str(), response.length(), 0);
       return;
     }
-    dataStore.emplace(commands[1],commands[2]);
-    std::string response = "+OK\r\n";
-    send(client_socket, response.c_str(), response.length(),0);
+    try{
+      std::string optionalCommand = commands[3]; toLowercase(optionalCommand);
+      if(commands.size() >= 5 && std::stoi(commands[4]) > 0 && optionalCommand == "px"){//with expiry
+        std::cout << "Setting key with expiry: " 
+                << "Key: " << commands[1] 
+                << ", Value: " << commands[2] 
+                << ", Expiry: " << commands[4] << "ms" 
+                << std::endl; 
+        setKey(commands[1],commands[2],commands[4]);
+      }
+      else{ // no expiry
+        setKey(commands[1],commands[2],std::to_string(-1)); // -1 -> special value, if -1, treated as having no ttl
+      }
+     std::string response = "+OK\r\n"; 
+     send(client_socket, response.c_str(), response.length(),0);
+    }
+    catch(const std::invalid_argument&){
+      std::string response = "-ERR invalid PX arguments for 'SET'\r\n";
+      send(client_socket, response.c_str(), response.length(),0);
+    }
   }
   else if(mainCommand == "get"){
     if(commands.size() < 2){
@@ -144,14 +188,14 @@ void sendData(std::vector<std::string> commands, int client_socket){
       send(client_socket, response.c_str(), response.length(), 0);
       return;
     }
-    auto it = dataStore.find(commands[1]);
-    if(it != dataStore.end()){
+    std::string value = getKeyValue(commands[1]);
+    if(value.length() != 0){
       return_data.str("");
       return_data.clear();
       return_data << "$";
-      return_data << std::to_string(it->second.length());
+      return_data << std::to_string(value.length());
       return_data << "\r\n";
-      return_data << it->second;
+      return_data << value;
       return_data << "\r\n";
       std::cout << return_data.str();
       std::string response = return_data.str();
@@ -178,20 +222,13 @@ void sendData(std::vector<std::string> commands, int client_socket){
 std::string handleIndividualWord(const char charBuffer[1024], int* wordIndex)
 {
   std::stringstream builder;
-  std::cout << "char buffer in individual thingy: " << charBuffer << std::endl;
-  std::cout << "Starting to process from char: " << charBuffer[*wordIndex]<< std::endl; 
   ++(*wordIndex);
-  std::cout << "wordIndex after increment: " << *wordIndex << std::endl;
   std::string cmdLen;
   while(charBuffer[(*wordIndex)] != '\r' && *wordIndex < 1024)
   {
-    std::cout << "word index: " << *wordIndex << std::endl;
     cmdLen += charBuffer[(*wordIndex)];
-    std::cout << "cmdLen = " << cmdLen << std::endl;
-    std::cout << "CURRENT CHAR: " <<charBuffer[*wordIndex] << std::endl;
     ++(*wordIndex);
   }
-  std::cout << "command length (individual word) : " << cmdLen << std::endl;
   int dataLength = std::stoi(cmdLen);
   ++(*wordIndex); 
   ++(*wordIndex); //eliminates need to skip r and n in loop
@@ -219,11 +256,10 @@ std::vector<std::string> generateCommands(const char charBuffer[1024]){
     int commandLength = std::stoi(bufferCmdLen);
 
     int* wordIndex = new int(i+2); //skip return and newline
-    std::cout << "STARTING WORD INDEX IS: " << *wordIndex << std::endl;
-    std::cout << "CHAR AT SAID INDEX IS: " << charBuffer[*wordIndex] << std::endl;
-    std::cout << "Command length is: " << commandLength << std::endl;
+    //std::cout << "STARTING WORD INDEX IS: " << *wordIndex << std::endl;
+    //std::cout << "CHAR AT SAID INDEX IS: " << charBuffer[*wordIndex] << std::endl;
+    //std::cout << "Command length is: " << commandLength << std::endl;
     while(commandList.size() < commandLength){
-     std::cout << "CALLING INDIVIDUAL WORD FUNCTION" << std::endl;
      commandList.push_back(handleIndividualWord(charBuffer, wordIndex));
     }
     delete wordIndex;
