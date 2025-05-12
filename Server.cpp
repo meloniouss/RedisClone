@@ -9,7 +9,7 @@
 //prototypes
 std::vector<std::string> generateCommands(const char charBuffer[1024]);
 std::string handleIndividualWord(const char charBuffer[1024], int* wordIndex);
-void sendData(std::vector<std::string> commands, int client_socket);
+void sendData(const std::vector<std::string> &commands, int client_socket);
 
 struct keyInfo {
   std::string value;
@@ -41,9 +41,19 @@ std::string getKeyValue(std::string key){
   dataStore.erase(key);
   return ""; //check for empty string in the command function
 }
-
-int main() {
-
+std::string dir;
+std::string dbfilename;
+int main(int argc, char* argv[]) {
+  for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--dir" && i + 1 < argc) {
+            dir = argv[++i];
+        } else if (arg == "--dbfilename" && i + 1 < argc) {
+            dbfilename = argv[++i];
+        } else {
+            std::cerr << "Unknown or incomplete argument: " << arg << "\n";
+        }
+    }
   // boilerplate
   WSADATA wsaData;
   int wsaInit = WSAStartup(MAKEWORD(2, 2), &wsaData);
@@ -136,7 +146,7 @@ void toLowercase(std::string& str) {
     std::transform(str.begin(), str.end(), str.begin(), [](unsigned char c) { return std::tolower(c); });
 }
 
-void sendData(std::vector<std::string> commands, int client_socket){
+void sendData(const std::vector<std::string> &commands, int client_socket){
   int number_of_commands = commands.size();
   if(number_of_commands == 0)
   {
@@ -215,6 +225,38 @@ void sendData(std::vector<std::string> commands, int client_socket){
     else{
       std::string response = "+OK\r\n";
       send(client_socket, response.c_str(), response.length(),0);
+    }
+  }
+  else if(mainCommand == "config"){
+    if(commands.size() < 3){
+     std::string response = "-ERR wrong number of arguments for 'CONFIG'\r\n";
+      send(client_socket, response.c_str(), response.length(), 0);
+      return;
+    }
+    else{
+      std::string paramCommand = commands[1];
+      std::string toGet = commands[2];
+      toLowercase(paramCommand);
+      toLowercase(toGet);
+      return_data.str("");
+      return_data.clear();
+      if(paramCommand == "get"){
+        return_data << "*2\r\n";
+        return_data << "$";
+        return_data << std::to_string(toGet.size());
+        return_data << "\r\n";
+        return_data << toGet;
+        return_data << "\r\n";
+        return_data << "$";
+        if(toGet == "dir"){
+          return_data << std::to_string(dir.length()) << "\r\n" << dir <<"\r\n";
+        }
+        else if(toGet == "dbfilename"){
+          return_data << std::to_string(dbfilename.length()) << "\r\n" << dbfilename << "\r\n";
+        }
+        std::string response = return_data.str();
+        send(client_socket, response.c_str(), response.length(), 0);
+      }
     }
   }
 }
