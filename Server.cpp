@@ -1,4 +1,6 @@
 #include <iostream>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <winsock2.h>
 #include <vector>
@@ -6,11 +8,12 @@
 #include <sstream>
 #include <unordered_map>
 #include <chrono>
+#include <regex>
 //prototypes
 std::vector<std::string> generateCommands(const char charBuffer[1024]);
 std::string handleIndividualWord(const char charBuffer[1024], int* wordIndex);
 void sendData(const std::vector<std::string> &commands, int client_socket);
-
+std::string fetchKeys(std::string key);
 struct keyInfo {
   std::string value;
   std::chrono::system_clock::time_point timestamp;
@@ -41,8 +44,46 @@ std::string getKeyValue(std::string key){
   dataStore.erase(key);
   return ""; //check for empty string in the command function
 }
+
 std::string dir;
 std::string dbfilename;
+
+void handleDbRead(std::string* fileContent, size_t* cursor){
+  //make sure to do (*cursor)++ to increment -> don't forget to dereference
+}
+void loadRDBfile(std::string dir, std::string dbfilename){
+  //all numbers are little endian (stored in reverse order)
+  std::filesystem::path filepath = std::filesystem::path(dir) / dbfilename; 
+  std::cout << filepath << std::endl;
+  std::ifstream RDB_FILE(filepath, std::ios::binary);
+  if(!RDB_FILE){
+    std::cerr << "ERROR: Invalid RDB file, make sure to use an absolute path." << std::endl;
+  }
+  auto fileSize = std::filesystem::file_size(filepath);
+  std::string fileContents(fileSize, '\0');
+  RDB_FILE.read(fileContents.data(), fileSize);
+  if(!RDB_FILE.read(fileContents.data(), fileSize)){
+    std::cerr << "ERROR: Failed to read RDB file.\n";
+  }
+  size_t cursor = 0;
+  while(cursor < fileContents.size()){
+    if(fileContents.substr(cursor, 6) == "REDIS"){
+      cursor += 10;
+    }
+    else if(static_cast<unsigned char>(fileContents[cursor]) == 0xFE){
+      //handle db function -> pass by &
+      handleDbRead(&fileContents, &cursor);
+    }
+    else if(static_cast<unsigned char>(fileContents[cursor]) == 0xFF){
+      //eof
+    }
+    else{
+      cursor++; //might be able to update cursor in if statements.
+    }
+  }
+}
+
+
 int main(int argc, char* argv[]) {
   for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -54,6 +95,9 @@ int main(int argc, char* argv[]) {
             std::cerr << "Unknown or incomplete argument: " << arg << "\n";
         }
     }
+
+  if(!dir.empty() && !dbfilename.empty()) loadRDBfile(dir,dbfilename);
+ 
   // boilerplate
   WSADATA wsaData;
   int wsaInit = WSAStartup(MAKEWORD(2, 2), &wsaData);
