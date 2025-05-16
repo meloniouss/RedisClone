@@ -48,8 +48,114 @@ std::string getKeyValue(std::string key){
 std::string dir;
 std::string dbfilename;
 
-void handleDbRead(std::string* fileContent, size_t* cursor){
-  //make sure to do (*cursor)++ to increment -> don't forget to dereference
+//create a struct for this
+size_t getSize(std::string* fileContents, size_t* cursor){   
+  uint8_t firstByte = static_cast<uint8_t>((*fileContents)[*cursor]);
+  uint8_t twoFirstBits = firstByte >> 6;
+  size_t size=0;
+  if(twoFirstBits == 0b00){ //last 6 bits
+    size = (firstByte & 0x3F);
+    (*cursor)++;
+  }
+  else if(twoFirstBits == 0b01){ //last 6 bits + next byte
+    (*cursor)++; //get next byte
+    size = (firstByte & 0x3F) + static_cast<uint8_t>((*fileContents)[(*cursor)++]);
+  }
+  else if(twoFirstBits == 0b10){
+    (*cursor)++; // go to next byte
+    if(firstByte == 0x80){ //read next 4 bytes
+      for (int i = 0; i < 4; ++i){
+        size <<= 8;
+        size |= static_cast<uint8_t>((*fileContents)[(*cursor)++]);
+      }
+    }
+    else if(firstByte == 0x81){ //read next 8 bytes
+      for (int i = 0; i < 8; ++i) {
+        size <<= 8;
+        size |= static_cast<uint8_t>((*fileContents)[(*cursor)++]);
+      }
+    }
+  }
+  else if(twoFirstBits == 0b11){ //specific string encoding
+    // !!! TO-DO !!!
+    size = (firstByte); //might honestly be worth adding a struct here called RDBEncoding or something.
+    (*cursor)++;
+  }
+  return size;
+}
+void handleDbRead(std::string* fileContents, size_t* cursor){
+  auto dbIndex = getSize(fileContents, cursor);
+  auto numKeys = 0;
+  auto numExpKeys = 0;
+
+  while(static_cast<unsigned char>((*fileContents)[*cursor]) != 0xFB){(*cursor)++;}
+  
+  numKeys = getSize(fileContents,cursor);
+  numExpKeys = getSize(fileContents,cursor);
+  int i = 0;
+  auto ttl = std::chrono::milliseconds(0);
+  std::stringstream keyStrStream;
+  std::stringstream valueStrStream;
+  size_t keyLength = 0;
+  size_t valueLength = 0;
+ 
+  while(i < numKeys){ //read until we have all keys
+    if(!valueStrStream.str().empty() && valueStrStream.str().length() == valueLength){
+      ttl = (ttl == std::chrono::milliseconds(0)) ? std::chrono::milliseconds(-1): ttl;
+      // !!! TO-DO !!!
+      setKey(keyStrStream.str(), valueStrStream.str(), std::to_string(ttl.count())); //we need to convert either to ascii or to (integer to string)
+      ttl = std::chrono::milliseconds(0);
+      keyStrStream.str("");
+      keyStrStream.clear();
+      valueStrStream.str("");
+      valueStrStream.clear();
+      keyLength = 0;
+      valueLength = 0;
+      i++;
+    }
+    else if(static_cast<unsigned char>((*fileContents)[(*cursor)++]) == 0xFC){ //milliseconds
+      uint64_t expirationRaw = 0;
+      for(int j = 0; j < 8; j++){
+        expirationRaw |= static_cast<uint64_t>(static_cast<unsigned char>((*fileContents)[(*cursor)++])) << (8 * j);
+        (*cursor)++;
+      }
+      auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch());
+      ttl = std::chrono::milliseconds(expirationRaw) - now_ms;
+    }
+    else if(static_cast<unsigned char>((*fileContents)[*cursor]) == 0xFD){ //seconds transformed into milliseconds
+      uint32_t expireSeconds = 0;
+      for(int j = 0; j < 4; j++) {
+        expireSeconds |= (static_cast<uint32_t>(static_cast<unsigned char>((*fileContents)[*cursor])) << (8 * j));
+        (*cursor)++;
+      }
+      auto expireMillis = std::chrono::milliseconds(expireSeconds * 1000ULL);
+      ttl = expireMillis - std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch());
+    }
+    else{
+      (*cursor)++; //this is the value type -->> no use for it yet?
+      if(keyStrStream.str().empty()){ //read key
+        (*cursor)++; //skip value type
+        keyLength = getSize(fileContents, cursor);
+        for(int index = 0; index < keyLength; index++){
+          keyStrStream <<static_cast<unsigned char>((*fileContents)[*cursor]);
+          (*cursor)++;
+        }
+      }
+      if(valueStrStream.str().empty()){ //read value
+        valueLength = getSize(fileContents,cursor);
+        if((valueLength >> 6) == 0b11) //special string encoding
+        {
+            // !!! TO DO !!! 
+        }
+        else{ //regular encoded
+          for(int index = 0; index < valueLength; index++){
+            valueStrStream <<static_cast<unsigned char>((*fileContents)[*cursor]);
+            (*cursor)++;
+          }
+        }
+      }
+    }
+  }
 }
 void loadRDBfile(std::string dir, std::string dbfilename){
   //all numbers are little endian (stored in reverse order)
@@ -352,8 +458,6 @@ std::vector<std::string> generateCommands(const char charBuffer[1024]){
   }
   return commandList;
 }
-
-
 
 
 
