@@ -14,6 +14,7 @@ std::vector<std::string> generateCommands(const char charBuffer[1024]);
 std::string handleIndividualWord(const char charBuffer[1024], int* wordIndex);
 void sendData(const std::vector<std::string> &commands, int client_socket);
 std::string fetchKeys(std::string key);
+
 struct keyInfo {
   std::string value;
   std::chrono::system_clock::time_point timestamp;
@@ -48,11 +49,22 @@ std::string getKeyValue(std::string key){
 std::string dir;
 std::string dbfilename;
 
-//create a struct for this
-size_t getSize(std::string* fileContents, size_t* cursor){   
+struct RdbSize{
+  bool special_encoding;
+  size_t size;
+};
+
+RdbSize getSize(std::string* fileContents, size_t* cursor){  
+ RdbSize returnSize;
+  std::cout << "Cursor: " << *cursor << ", file size: " << fileContents->size() << "\n";
+  if (*cursor >= fileContents->size()) {
+        std::cerr << "Error: Cursor position out of bounds when reading size\n";
+        return returnSize;
+    }
   uint8_t firstByte = static_cast<uint8_t>((*fileContents)[*cursor]);
   uint8_t twoFirstBits = firstByte >> 6;
   size_t size=0;
+    
   if(twoFirstBits == 0b00){ //last 6 bits
     size = (firstByte & 0x3F);
     (*cursor)++;
@@ -64,46 +76,56 @@ size_t getSize(std::string* fileContents, size_t* cursor){
   else if(twoFirstBits == 0b10){
     (*cursor)++; // go to next byte
     if(firstByte == 0x80){ //read next 4 bytes
+      size = 0;
       for (int i = 0; i < 4; ++i){
-        size <<= 8;
-        size |= static_cast<uint8_t>((*fileContents)[(*cursor)++]);
-      }
+        size |= (static_cast<uint64_t>(static_cast<uint8_t>((*fileContents)[(*cursor)++])) << (8 * i));
+      }    
     }
     else if(firstByte == 0x81){ //read next 8 bytes
-      for (int i = 0; i < 8; ++i) {
-        size <<= 8;
-        size |= static_cast<uint8_t>((*fileContents)[(*cursor)++]);
+      size = 0;
+      for (int i = 0; i < 8; ++i){   
+        size |= (static_cast<uint64_t>(static_cast<uint8_t>((*fileContents)[(*cursor)++])) << (8 * i));
       }
     }
   }
   else if(twoFirstBits == 0b11){ //specific string encoding
-    // !!! TO-DO !!!
-    size = (firstByte); //might honestly be worth adding a struct here called RDBEncoding or something.
+    returnSize.special_encoding = true;
+    size = (firstByte);
     (*cursor)++;
   }
-  return size;
+  returnSize.size = size;
+  return returnSize;
 }
 void handleDbRead(std::string* fileContents, size_t* cursor){
-  auto dbIndex = getSize(fileContents, cursor);
+  (*cursor)++;
+  auto dbIndex = getSize(fileContents, cursor).size;
+  std::cout << "dbIndex: " << dbIndex << std::endl;
   auto numKeys = 0;
   auto numExpKeys = 0;
-
-  while(static_cast<unsigned char>((*fileContents)[*cursor]) != 0xFB){(*cursor)++;}
-  
-  numKeys = getSize(fileContents,cursor);
-  numExpKeys = getSize(fileContents,cursor);
+  //careful here, might have inf loop !!! TO-DO !!!
+  while(*cursor < fileContents->size() && static_cast<unsigned char>((*fileContents)[*cursor]) != 0xFB){(*cursor)++;}
+  (*cursor)++; //skip 0xFB byte
+  if (*cursor >= fileContents->size()) {
+    std::cerr << "Error: 0xFB byte not found, cursor out of bounds\n";
+    return; 
+}
+  RdbSize keySize = getSize(fileContents, cursor);
+  numKeys = keySize.size;
+  RdbSize expKeySize = getSize(fileContents, cursor);
+  numExpKeys = expKeySize.size;
+  std::cout << "Num keys: " << numKeys << ", Expiring: " << numExpKeys << "\n";
   int i = 0;
   auto ttl = std::chrono::milliseconds(0);
   std::stringstream keyStrStream;
   std::stringstream valueStrStream;
   size_t keyLength = 0;
   size_t valueLength = 0;
- 
-  while(i < numKeys){ //read until we have all keys
-    if(!valueStrStream.str().empty() && valueStrStream.str().length() == valueLength){
+  std::cin.get(); 
+  while(i < numKeys){
+
+    if(!valueStrStream.str().empty()){
       ttl = (ttl == std::chrono::milliseconds(0)) ? std::chrono::milliseconds(-1): ttl;
-      // !!! TO-DO !!!
-      setKey(keyStrStream.str(), valueStrStream.str(), std::to_string(ttl.count())); //we need to convert either to ascii or to (integer to string)
+      setKey(keyStrStream.str(), valueStrStream.str(), std::to_string(ttl.count()));
       ttl = std::chrono::milliseconds(0);
       keyStrStream.str("");
       keyStrStream.clear();
@@ -113,10 +135,10 @@ void handleDbRead(std::string* fileContents, size_t* cursor){
       valueLength = 0;
       i++;
     }
-    else if(static_cast<unsigned char>((*fileContents)[(*cursor)++]) == 0xFC){ //milliseconds
+    else if(static_cast<unsigned char>((*fileContents)[(*cursor)++]) == 0xFC){ //milliseconds, careful with the incrementing here
       uint64_t expirationRaw = 0;
       for(int j = 0; j < 8; j++){
-        expirationRaw |= static_cast<uint64_t>(static_cast<unsigned char>((*fileContents)[(*cursor)++])) << (8 * j);
+        expirationRaw |= static_cast<uint64_t>(static_cast<unsigned char>((*fileContents)[(*cursor)])) << (8 * j);
         (*cursor)++;
       }
       auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch());
@@ -132,23 +154,55 @@ void handleDbRead(std::string* fileContents, size_t* cursor){
       ttl = expireMillis - std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch());
     }
     else{
-      (*cursor)++; //this is the value type -->> no use for it yet?
+      std::cout << "Value type byte at cursor " << *cursor << ": "
+          << std::hex << (int)(uint8_t)(*fileContents)[*cursor] << std::dec << "\n";
       if(keyStrStream.str().empty()){ //read key
-        (*cursor)++; //skip value type
-        keyLength = getSize(fileContents, cursor);
+        std::cout << "Reading key size at cursor: " << *cursor << std::endl;
+        std::cin.get();
+        RdbSize keySize = getSize(fileContents,cursor);
+        keyLength = keySize.size;
+        std::cout << "Key length is:" << keyLength << std::endl;
+        std::cin.get();
         for(int index = 0; index < keyLength; index++){
           keyStrStream <<static_cast<unsigned char>((*fileContents)[*cursor]);
           (*cursor)++;
         }
       }
       if(valueStrStream.str().empty()){ //read value
-        valueLength = getSize(fileContents,cursor);
-        if((valueLength >> 6) == 0b11) //special string encoding
+        RdbSize valueLength = getSize(fileContents,cursor);
+        bool isSpecial = valueLength.special_encoding; 
+        if((isSpecial)) //special string encoding
         {
-            // !!! TO DO !!! 
+          size_t byte = valueLength.size;
+          switch (byte){
+            case 0xC0: {//8bit int, endian-ness doesn't apply
+              uint8_t value = static_cast<uint8_t>((*fileContents)[(*cursor)++]);
+              valueStrStream << std::to_string(value);
+              break;
+            }
+            case 0xC1: {//16 bit int, little endian
+              uint16_t val = 0;
+              val |= static_cast<uint16_t>(static_cast<uint8_t>((*fileContents)[(*cursor)++]));
+              val |= static_cast<uint16_t>(static_cast<uint8_t>((*fileContents)[(*cursor)++])) << 8;
+              valueStrStream << std::to_string(val);
+              break;
+            }
+            case 0xC2:{ //32 bit int, little endian
+              uint32_t val = 0;
+              val |= static_cast<uint32_t>(static_cast<uint8_t>((*fileContents)[(*cursor)++]));
+              val |= static_cast<uint32_t>(static_cast<uint8_t>((*fileContents)[(*cursor)++])) << 8;
+              val |= static_cast<uint32_t>(static_cast<uint8_t>((*fileContents)[(*cursor)++])) << 16;
+              val |= static_cast<uint32_t>(static_cast<uint8_t>((*fileContents)[(*cursor)++])) << 24;
+              valueStrStream << std::to_string(val);
+            break;
+            }
+            case 0xC3:
+              //ignore, not doing compression, maybe add some error handling or soemthing
+            break;
+          }
         }
         else{ //regular encoded
-          for(int index = 0; index < valueLength; index++){
+          for(int index = 0; index < valueLength.size; index++){
             valueStrStream <<static_cast<unsigned char>((*fileContents)[*cursor]);
             (*cursor)++;
           }
@@ -156,9 +210,14 @@ void handleDbRead(std::string* fileContents, size_t* cursor){
       }
     }
   }
+  if (!valueStrStream.str().empty()) {
+    ttl = (ttl == std::chrono::milliseconds(0)) ? std::chrono::milliseconds(-1): ttl;
+    setKey(keyStrStream.str(), valueStrStream.str(), std::to_string(ttl.count()));
+  }
 }
 void loadRDBfile(std::string dir, std::string dbfilename){
   //all numbers are little endian (stored in reverse order)
+  std::cout << "loading rdb file" << std::endl;
   std::filesystem::path filepath = std::filesystem::path(dir) / dbfilename; 
   std::cout << filepath << std::endl;
   std::ifstream RDB_FILE(filepath, std::ios::binary);
@@ -167,26 +226,33 @@ void loadRDBfile(std::string dir, std::string dbfilename){
   }
   auto fileSize = std::filesystem::file_size(filepath);
   std::string fileContents(fileSize, '\0');
-  RDB_FILE.read(fileContents.data(), fileSize);
   if(!RDB_FILE.read(fileContents.data(), fileSize)){
     std::cerr << "ERROR: Failed to read RDB file.\n";
   }
   size_t cursor = 0;
+std::cout << "First 30 bytes:\n";
+for (int i = 0; i < 30 && i < fileContents.size(); i++) {
+    printf("%02X ", static_cast<unsigned char>(fileContents[i]));
+}
+std::cout << "\n";
   while(cursor < fileContents.size()){
-    if(fileContents.substr(cursor, 6) == "REDIS"){
+    if(cursor + 6 <= fileContents.size() && fileContents.substr(cursor, 6) == "REDIS"){
       cursor += 10;
     }
-    else if(static_cast<unsigned char>(fileContents[cursor]) == 0xFE){
-      //handle db function -> pass by &
-      handleDbRead(&fileContents, &cursor);
+    else {
+      unsigned char currByte = static_cast<unsigned char>(fileContents[cursor]);
+      if(currByte == 0xFE){
+          std::cout << "reading DB function called";
+          handleDbRead(&fileContents, &cursor);
+      }
+      else if(currByte == 0xFF){
+          break;
+      }
+      else{
+          cursor++;
+      }
     }
-    else if(static_cast<unsigned char>(fileContents[cursor]) == 0xFF){
-      //eof
-    }
-    else{
-      cursor++; //might be able to update cursor in if statements.
-    }
-  }
+}
 }
 
 
@@ -201,9 +267,7 @@ int main(int argc, char* argv[]) {
             std::cerr << "Unknown or incomplete argument: " << arg << "\n";
         }
     }
-
   if(!dir.empty() && !dbfilename.empty()) loadRDBfile(dir,dbfilename);
- 
   // boilerplate
   WSADATA wsaData;
   int wsaInit = WSAStartup(MAKEWORD(2, 2), &wsaData);
