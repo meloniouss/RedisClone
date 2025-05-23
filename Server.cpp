@@ -14,7 +14,6 @@ std::vector<std::string> generateCommands(const char charBuffer[1024]);
 std::string handleIndividualWord(const char charBuffer[1024], int* wordIndex);
 void sendData(const std::vector<std::string> &commands, int client_socket);
 std::string fetchKeys(std::string key);
-
 struct keyInfo {
   std::string value;
   std::chrono::system_clock::time_point timestamp;
@@ -71,7 +70,7 @@ RdbSize getSize(std::string* fileContents, size_t* cursor){
   }
   else if(twoFirstBits == 0b01){ //last 6 bits + next byte
     (*cursor)++; //get next byte
-    size = (firstByte & 0x3F) + static_cast<uint8_t>((*fileContents)[(*cursor)++]);
+    size = (firstByte & 0x3F) + static_cast<uint8_t>((*fileContents)[(*cursor)++]); 
   }
   else if(twoFirstBits == 0b10){
     (*cursor)++; // go to next byte
@@ -79,13 +78,15 @@ RdbSize getSize(std::string* fileContents, size_t* cursor){
       size = 0;
       for (int i = 0; i < 4; ++i){
         size |= (static_cast<uint64_t>(static_cast<uint8_t>((*fileContents)[(*cursor)++])) << (8 * i));
-      }    
+      }   
+      (*cursor)++; // new
     }
     else if(firstByte == 0x81){ //read next 8 bytes
       size = 0;
       for (int i = 0; i < 8; ++i){   
         size |= (static_cast<uint64_t>(static_cast<uint8_t>((*fileContents)[(*cursor)++])) << (8 * i));
       }
+      (*cursor)++; //new
     }
   }
   else if(twoFirstBits == 0b11){ //specific string encoding
@@ -102,7 +103,6 @@ void handleDbRead(std::string* fileContents, size_t* cursor){
   std::cout << "dbIndex: " << dbIndex << std::endl;
   auto numKeys = 0;
   auto numExpKeys = 0;
-  //careful here, might have inf loop !!! TO-DO !!!
   while(*cursor < fileContents->size() && static_cast<unsigned char>((*fileContents)[*cursor]) != 0xFB){(*cursor)++;}
   (*cursor)++; //skip 0xFB byte
   if (*cursor >= fileContents->size()) {
@@ -120,10 +120,11 @@ void handleDbRead(std::string* fileContents, size_t* cursor){
   std::stringstream valueStrStream;
   size_t keyLength = 0;
   size_t valueLength = 0;
-  std::cin.get(); 
+  std::cin.get(); //remove after testing  
+  (*cursor)++;
   while(i < numKeys){
-
     if(!valueStrStream.str().empty()){
+      std::cout << "ttl is: " << std::to_string(ttl.count());
       ttl = (ttl == std::chrono::milliseconds(0)) ? std::chrono::milliseconds(-1): ttl;
       setKey(keyStrStream.str(), valueStrStream.str(), std::to_string(ttl.count()));
       ttl = std::chrono::milliseconds(0);
@@ -134,8 +135,11 @@ void handleDbRead(std::string* fileContents, size_t* cursor){
       keyLength = 0;
       valueLength = 0;
       i++;
-    }
-    else if(static_cast<unsigned char>((*fileContents)[(*cursor)++]) == 0xFC){ //milliseconds, careful with the incrementing here
+      (*cursor)++; // new
+    }                                    
+    else if(static_cast<unsigned char>((*fileContents)[(*cursor)]) == 0xFC){ //milliseconds, careful with the incrementing here
+      std::cout << "FOUND KEY WITH EXPIRATION" << std::endl;
+      std::cin.get();
       uint64_t expirationRaw = 0;
       for(int j = 0; j < 8; j++){
         expirationRaw |= static_cast<uint64_t>(static_cast<unsigned char>((*fileContents)[(*cursor)])) << (8 * j);
@@ -143,8 +147,10 @@ void handleDbRead(std::string* fileContents, size_t* cursor){
       }
       auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch());
       ttl = std::chrono::milliseconds(expirationRaw) - now_ms;
-    }
-    else if(static_cast<unsigned char>((*fileContents)[*cursor]) == 0xFD){ //seconds transformed into milliseconds
+    }                                                 //added ++ here
+    else if(static_cast<unsigned char>((*fileContents)[(*cursor)]) == 0xFD){ //seconds transformed into milliseconds
+      std::cout << "FOUND 0xFD expiration" << std::endl;
+      std::cin.get();
       uint32_t expireSeconds = 0;
       for(int j = 0; j < 4; j++) {
         expireSeconds |= (static_cast<uint32_t>(static_cast<unsigned char>((*fileContents)[*cursor])) << (8 * j));
@@ -152,17 +158,16 @@ void handleDbRead(std::string* fileContents, size_t* cursor){
       }
       auto expireMillis = std::chrono::milliseconds(expireSeconds * 1000ULL);
       ttl = expireMillis - std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch());
+    
     }
     else{
-      std::cout << "Value type byte at cursor " << *cursor << ": "
-          << std::hex << (int)(uint8_t)(*fileContents)[*cursor] << std::dec << "\n";
       if(keyStrStream.str().empty()){ //read key
         std::cout << "Reading key size at cursor: " << *cursor << std::endl;
-        std::cin.get();
+        std::cin.get(); //remove
         RdbSize keySize = getSize(fileContents,cursor);
         keyLength = keySize.size;
         std::cout << "Key length is:" << keyLength << std::endl;
-        std::cin.get();
+        std::cin.get(); //remove
         for(int index = 0; index < keyLength; index++){
           keyStrStream <<static_cast<unsigned char>((*fileContents)[*cursor]);
           (*cursor)++;
@@ -203,8 +208,7 @@ void handleDbRead(std::string* fileContents, size_t* cursor){
         }
         else{ //regular encoded
           for(int index = 0; index < valueLength.size; index++){
-            valueStrStream <<static_cast<unsigned char>((*fileContents)[*cursor]);
-            (*cursor)++;
+            valueStrStream <<static_cast<unsigned char>((*fileContents)[(*cursor)++]);
           }
         }
       }
@@ -368,6 +372,8 @@ void sendData(const std::vector<std::string> &commands, int client_socket){
   }
   std::string mainCommand = commands[0];
   std::stringstream return_data;
+  return_data.str("");
+  return_data.clear();
   toLowercase(mainCommand);
   if(mainCommand == "echo"){
     return_data << "$";
@@ -441,6 +447,24 @@ void sendData(const std::vector<std::string> &commands, int client_socket){
       send(client_socket, response.c_str(), response.length(),0);
     }
   }
+  else if(mainCommand == "keys"){
+    if(commands.size() < 2){
+      std::string response = "-ERR Wrong number of arguments for 'KEYS'\r\n";
+      send(client_socket, response.c_str(), response.length(),0);
+      return;
+    }
+    else{ //get all keys 
+      size_t numkeys = dataStore.size();
+      return_data.str("");
+      return_data.clear();
+      return_data << "*" << std::to_string(numkeys) << "\r\n" ;
+      for(const auto& keyStruct : dataStore){
+        return_data << "$" << std::to_string(keyStruct.first.length()) << "\r\n" << keyStruct.first << "\r\n"; 
+      }
+      std::string response = return_data.str();
+      send(client_socket, response.c_str(), response.length(), 0);
+    }
+  }
   else if(mainCommand == "config"){
     if(commands.size() < 3){
      std::string response = "-ERR wrong number of arguments for 'CONFIG'\r\n";
@@ -512,9 +536,6 @@ std::vector<std::string> generateCommands(const char charBuffer[1024]){
     int commandLength = std::stoi(bufferCmdLen);
 
     int* wordIndex = new int(i+2); //skip return and newline
-    //std::cout << "STARTING WORD INDEX IS: " << *wordIndex << std::endl;
-    //std::cout << "CHAR AT SAID INDEX IS: " << charBuffer[*wordIndex] << std::endl;
-    //std::cout << "Command length is: " << commandLength << std::endl;
     while(commandList.size() < commandLength){
      commandList.push_back(handleIndividualWord(charBuffer, wordIndex));
     }
