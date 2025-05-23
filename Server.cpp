@@ -9,20 +9,9 @@
 #include <unordered_map>
 #include <chrono>
 #include <regex>
-//prototypes
-std::vector<std::string> generateCommands(const char charBuffer[1024]);
-std::string handleIndividualWord(const char charBuffer[1024], int* wordIndex);
-void sendData(const std::vector<std::string> &commands, int client_socket);
-std::string fetchKeys(std::string key);
-struct keyInfo {
-  std::string value;
-  std::chrono::system_clock::time_point timestamp;
-  std::chrono::milliseconds ttl;
-};
+#include "server.hpp"
 
-static std::unordered_map<std::string, keyInfo> dataStore;
-
-void setKey(std::string key, std::string value, std::string ttl)
+void Server::setKey(std::string key, std::string value, std::string ttl)
 {
   keyInfo key_Value{
   value,
@@ -32,7 +21,7 @@ void setKey(std::string key, std::string value, std::string ttl)
   dataStore.emplace(key, key_Value);
 }
 
-std::string getKeyValue(std::string key){
+std::string Server::getKeyValue(std::string key){
   auto it = dataStore.find(key);
   if(it != dataStore.end()){
     auto expiryTime = (it->second.timestamp + it->second.ttl);
@@ -45,15 +34,7 @@ std::string getKeyValue(std::string key){
   return ""; //check for empty string in the command function
 }
 
-std::string dir;
-std::string dbfilename;
-
-struct RdbSize{
-  bool special_encoding;
-  size_t size;
-};
-
-RdbSize getSize(std::string* fileContents, size_t* cursor){  
+Server::RdbSize Server::getSize(std::string* fileContents, size_t* cursor){  
  RdbSize returnSize;
   std::cout << "Cursor: " << *cursor << ", file size: " << fileContents->size() << "\n";
   if (*cursor >= fileContents->size()) {
@@ -76,14 +57,14 @@ RdbSize getSize(std::string* fileContents, size_t* cursor){
     (*cursor)++; // go to next byte
     if(firstByte == 0x80){ //read next 4 bytes
       size = 0;
-      for (int i = 0; i < 4; ++i){
+      for (size_t i = 0; i < 4; ++i){
         size |= (static_cast<uint64_t>(static_cast<uint8_t>((*fileContents)[(*cursor)++])) << (8 * i));
       }   
       (*cursor)++; // new
     }
     else if(firstByte == 0x81){ //read next 8 bytes
       size = 0;
-      for (int i = 0; i < 8; ++i){   
+      for (size_t i = 0; i < 8; ++i){   
         size |= (static_cast<uint64_t>(static_cast<uint8_t>((*fileContents)[(*cursor)++])) << (8 * i));
       }
       (*cursor)++; //new
@@ -97,12 +78,12 @@ RdbSize getSize(std::string* fileContents, size_t* cursor){
   returnSize.size = size;
   return returnSize;
 }
-void handleDbRead(std::string* fileContents, size_t* cursor){
+void Server::handleDbRead(std::string* fileContents, size_t* cursor){
   (*cursor)++;
   auto dbIndex = getSize(fileContents, cursor).size;
   std::cout << "dbIndex: " << dbIndex << std::endl;
-  auto numKeys = 0;
-  auto numExpKeys = 0;
+  size_t numKeys = 0;
+  size_t numExpKeys = 0;
   while(*cursor < fileContents->size() && static_cast<unsigned char>((*fileContents)[*cursor]) != 0xFB){(*cursor)++;}
   (*cursor)++; //skip 0xFB byte
   if (*cursor >= fileContents->size()) {
@@ -114,7 +95,7 @@ void handleDbRead(std::string* fileContents, size_t* cursor){
   RdbSize expKeySize = getSize(fileContents, cursor);
   numExpKeys = expKeySize.size;
   std::cout << "Num keys: " << numKeys << ", Expiring: " << numExpKeys << "\n";
-  int i = 0;
+  size_t i = 0;
   auto ttl = std::chrono::milliseconds(0);
   std::stringstream keyStrStream;
   std::stringstream valueStrStream;
@@ -122,7 +103,7 @@ void handleDbRead(std::string* fileContents, size_t* cursor){
   size_t valueLength = 0;
   std::cin.get(); //remove after testing  
   (*cursor)++;
-  while(i < numKeys){
+  while(i < numKeys && (*cursor) <= fileContents->size()){
     if(!valueStrStream.str().empty()){
       std::cout << "ttl is: " << std::to_string(ttl.count());
       ttl = (ttl == std::chrono::milliseconds(0)) ? std::chrono::milliseconds(-1): ttl;
@@ -135,13 +116,14 @@ void handleDbRead(std::string* fileContents, size_t* cursor){
       keyLength = 0;
       valueLength = 0;
       i++;
+      std::cout << "NUM KEYS PROCESSED IS: " << i << std::endl;
       (*cursor)++; // new
     }                                    
     else if(static_cast<unsigned char>((*fileContents)[(*cursor)]) == 0xFC){ //milliseconds, careful with the incrementing here
       std::cout << "FOUND KEY WITH EXPIRATION" << std::endl;
       std::cin.get();
       uint64_t expirationRaw = 0;
-      for(int j = 0; j < 8; j++){
+      for(size_t j = 0; j < 8; j++){
         expirationRaw |= static_cast<uint64_t>(static_cast<unsigned char>((*fileContents)[(*cursor)])) << (8 * j);
         (*cursor)++;
       }
@@ -152,7 +134,7 @@ void handleDbRead(std::string* fileContents, size_t* cursor){
       std::cout << "FOUND 0xFD expiration" << std::endl;
       std::cin.get();
       uint32_t expireSeconds = 0;
-      for(int j = 0; j < 4; j++) {
+      for(size_t j = 0; j < 4; j++) {
         expireSeconds |= (static_cast<uint32_t>(static_cast<unsigned char>((*fileContents)[*cursor])) << (8 * j));
         (*cursor)++;
       }
@@ -168,7 +150,7 @@ void handleDbRead(std::string* fileContents, size_t* cursor){
         keyLength = keySize.size;
         std::cout << "Key length is:" << keyLength << std::endl;
         std::cin.get(); //remove
-        for(int index = 0; index < keyLength; index++){
+        for(size_t index = 0; index < keyLength; index++){
           keyStrStream <<static_cast<unsigned char>((*fileContents)[*cursor]);
           (*cursor)++;
         }
@@ -207,7 +189,7 @@ void handleDbRead(std::string* fileContents, size_t* cursor){
           }
         }
         else{ //regular encoded
-          for(int index = 0; index < valueLength.size; index++){
+          for(size_t index = 0; index < valueLength.size; index++){
             valueStrStream <<static_cast<unsigned char>((*fileContents)[(*cursor)++]);
           }
         }
@@ -219,7 +201,7 @@ void handleDbRead(std::string* fileContents, size_t* cursor){
     setKey(keyStrStream.str(), valueStrStream.str(), std::to_string(ttl.count()));
   }
 }
-void loadRDBfile(std::string dir, std::string dbfilename){
+void Server::loadRDBfile(std::string dir, std::string dbfilename){
   //all numbers are little endian (stored in reverse order)
   std::cout << "loading rdb file" << std::endl;
   std::filesystem::path filepath = std::filesystem::path(dir) / dbfilename; 
@@ -235,7 +217,7 @@ void loadRDBfile(std::string dir, std::string dbfilename){
   }
   size_t cursor = 0;
 std::cout << "First 30 bytes:\n";
-for (int i = 0; i < 30 && i < fileContents.size(); i++) {
+for (size_t i = 0; i < 30 && i < fileContents.size(); i++) {
     printf("%02X ", static_cast<unsigned char>(fileContents[i]));
 }
 std::cout << "\n";
@@ -256,52 +238,58 @@ std::cout << "\n";
           cursor++;
       }
     }
-}
+  }
 }
 
-
-int main(int argc, char* argv[]) {
-  for (int i = 1; i < argc; ++i) {
-        std::string arg = argv[i];
-        if (arg == "--dir" && i + 1 < argc) {
-            dir = argv[++i];
-        } else if (arg == "--dbfilename" && i + 1 < argc) {
-            dbfilename = argv[++i];
-        } else {
-            std::cerr << "Unknown or incomplete argument: " << arg << "\n";
-        }
+void Server::generateVars(int argc, char* argv[]){
+  for (size_t i = 1; i < argc; ++i) {
+    std::string arg = argv[i];
+    if (arg == "--dir" && i + 1 < argc) {
+      dir = argv[++i];
+    } 
+    else if (arg == "--dbfilename" && i + 1 < argc) {
+      dbfilename = argv[++i];
     }
+    else if(arg == "--port" && i+1 < argc){
+        port = std::stoi(argv[++i]);
+    }
+    else{
+      std::cerr << "Unknown or incomplete argument: " << arg << "\n";
+    }
+  }
+}
+void Server::run() {
   if(!dir.empty() && !dbfilename.empty()) loadRDBfile(dir,dbfilename);
   // boilerplate
   WSADATA wsaData;
   int wsaInit = WSAStartup(MAKEWORD(2, 2), &wsaData);
   if (wsaInit != 0) {
     std::cerr << "Winsock initialization failed" << std::endl;
-    return 1;
+    return;
   }
   int server_fd = socket(AF_INET, SOCK_STREAM, 0);
   if (server_fd == INVALID_SOCKET) {
     std::cerr << "Failed to create socket" << std::endl;
     WSACleanup();
-    return 1;
+    return;
   }
   sockaddr_in server_addr;
   server_addr.sin_family = AF_INET;
   server_addr.sin_addr.s_addr = INADDR_ANY;
-  server_addr.sin_port = htons(6379);
+  server_addr.sin_port = htons(port);
   if (bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) ==
       SOCKET_ERROR) {
     std::cerr << "Bind failed" << std::endl;
     closesocket(server_fd);
     WSACleanup();
-    return 1;
+    return;
   }
   std::cout << "Bind successful" << std::endl;
   if (listen(server_fd, 5) == SOCKET_ERROR) {
     std::cerr << "Listen failed" << std::endl;
     closesocket(server_fd);
     WSACleanup();
-    return 1;
+    return;
   }
   // core logic
   char *ip_str = inet_ntoa(server_addr.sin_addr);
@@ -327,7 +315,7 @@ int main(int argc, char* argv[]) {
           std::cerr << "Accept failed" << std::endl;
           closesocket(server_fd);
           WSACleanup();
-          return 1; //maybe add some slightly better error handling here
+          return; //maybe add some slightly better error handling here
         }
         std::cout << "Client added:" << client_socket << std::endl;
         CLIENT_SOCKET_LIST.push_back(client_socket);
@@ -357,14 +345,14 @@ int main(int argc, char* argv[]) {
   }
   closesocket(server_fd);
   WSACleanup();
-  return 0;
+  return;
 }
 
 void toLowercase(std::string& str) {
     std::transform(str.begin(), str.end(), str.begin(), [](unsigned char c) { return std::tolower(c); });
 }
 
-void sendData(const std::vector<std::string> &commands, int client_socket){
+void Server::sendData(const std::vector<std::string> &commands, int client_socket){
   int number_of_commands = commands.size();
   if(number_of_commands == 0)
   {
@@ -384,6 +372,10 @@ void sendData(const std::vector<std::string> &commands, int client_socket){
     std::cout << return_data.str();
     std::string response = return_data.str();
     send(client_socket, response.c_str(), response.length(), 0);
+  }
+  else if(mainCommand == "ping"){
+    std::string response = "+PONG\r\n";
+    send(client_socket, response.c_str(), response.length(),0);
   }
   else if(mainCommand == "set"){
     if(commands.size() < 3){
@@ -497,9 +489,16 @@ void sendData(const std::vector<std::string> &commands, int client_socket){
       }
     }
   }
+  else{
+    std::cout << "Sending error response to client\n";
+    std::string response = "-ERR Invalid command\r\n";
+    send(client_socket, response.c_str(), response.length(), 0);
+    std::cout << "Error response sent\n";
+    return;
+  }
 }
 
-std::string handleIndividualWord(const char charBuffer[1024], int* wordIndex)
+std::string Server::handleIndividualWord(const char charBuffer[1024], int* wordIndex)
 {
   std::stringstream builder;
   ++(*wordIndex);
@@ -512,7 +511,7 @@ std::string handleIndividualWord(const char charBuffer[1024], int* wordIndex)
   int dataLength = std::stoi(cmdLen);
   ++(*wordIndex); 
   ++(*wordIndex); //eliminates need to skip r and n in loop
-  for(int i = 0; i < dataLength; i++){
+  for(size_t i = 0; i < dataLength; i++){
       builder << charBuffer[*wordIndex];
       ++(*wordIndex);
   }
@@ -522,12 +521,12 @@ std::string handleIndividualWord(const char charBuffer[1024], int* wordIndex)
   return builder.str();
 }
   
-std::vector<std::string> generateCommands(const char charBuffer[1024]){
+std::vector<std::string> Server::generateCommands(const char charBuffer[1024]){
   std::cout << "Received Buffer: \n" << charBuffer << std::endl;
   std::vector<std::string> commandList;
   if(charBuffer[0] == '*'){
 
-    int i = 1;
+    size_t i = 1;
     std::string bufferCmdLen;
     while (charBuffer[i] != '\r' && i < 1024) {
       bufferCmdLen += charBuffer[i];
