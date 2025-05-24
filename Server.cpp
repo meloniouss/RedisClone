@@ -253,10 +253,21 @@ void Server::generateVars(int argc, char* argv[]){
     else if(arg == "--port" && i+1 < argc){
         port = std::stoi(argv[++i]);
     }
+    else if(arg == "--replicaof" && i+2 < argc){
+      replInfo.role = "slave";
+      masterHost = argv[++i];
+      masterPort = std::stoi(argv[++i]);
+    }
     else{
       std::cerr << "Unknown or incomplete argument: " << arg << "\n";
     }
   }
+  if (replInfo.role.empty()) {
+        replInfo.role = "master";
+        masterHost = "";
+        masterPort = 0;
+        connectedSlaves.clear();
+    }
 }
 void Server::run() {
   if(!dir.empty() && !dbfilename.empty()) loadRDBfile(dir,dbfilename);
@@ -372,6 +383,23 @@ void Server::sendData(const std::vector<std::string> &commands, int client_socke
     std::cout << return_data.str();
     std::string response = return_data.str();
     send(client_socket, response.c_str(), response.length(), 0);
+  }
+  else if(mainCommand == "info"){
+    if(commands.size() < 2){
+      std::string response = "-ERR wrong number of arguments for 'INFO'\r\n";
+      send(client_socket, response.c_str(), response.length(), 0);
+      return;
+    }
+    std::string secondaryCommand = commands[1];
+    toLowercase(secondaryCommand);
+    if(secondaryCommand == "replication"){
+      std::string data = "role:" + replInfo.role;
+      std::stringstream return_data;
+      return_data << "$" << data.length() << "\r\n" << data << "\r\n";
+      std::string response = return_data.str();
+      std::cout << response;
+      send(client_socket, response.c_str(), response.length(), 0);
+    }
   }
   else if(mainCommand == "ping"){
     std::string response = "+PONG\r\n";
