@@ -1,4 +1,5 @@
 #include <iostream>
+#include <ws2tcpip.h>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -267,6 +268,8 @@ void Server::generateVars(int argc, char* argv[]){
         masterHost = "";
         masterPort = 0;
         connectedSlaves.clear();
+        replInfo.master_replid = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb";
+        replInfo.master_repl_offset = 0;
     }
 }
 void Server::run() {
@@ -302,11 +305,13 @@ void Server::run() {
     WSACleanup();
     return;
   }
-  // core logic
+  
   char *ip_str = inet_ntoa(server_addr.sin_addr);
   std::cout << "Server is listening on " << ip_str << ":" << ntohs(server_addr.sin_port) << std::endl;
-  std::vector<int> CLIENT_SOCKET_LIST;
   
+  if(replInfo.role == "slave"){sendHandshake();}
+
+  std::vector<int> CLIENT_SOCKET_LIST;
   bool running = true;
   FD_SET clientSet;
   FD_ZERO(&clientSet);
@@ -393,9 +398,9 @@ void Server::sendData(const std::vector<std::string> &commands, int client_socke
     std::string secondaryCommand = commands[1];
     toLowercase(secondaryCommand);
     if(secondaryCommand == "replication"){
-      std::string data = "role:" + replInfo.role;
+      std::string data = "role:" + replInfo.role + "\r\nmaster_replid:" + replInfo.master_replid + "\r\nmaster_repl_offset:" + std::to_string(replInfo.master_repl_offset) + "\r\n";
       std::stringstream return_data;
-      return_data << "$" << data.length() << "\r\n" << data << "\r\n";
+      return_data << "$" << data.length()<< "\r\n" << data << "\r\n";
       std::string response = return_data.str();
       std::cout << response;
       send(client_socket, response.c_str(), response.length(), 0);
@@ -517,6 +522,37 @@ void Server::sendData(const std::vector<std::string> &commands, int client_socke
       }
     }
   }
+  else if(mainCommand == "replconf"){
+    if(commands.size() < 3){
+      std::string response = "-ERR Replication ERROR - NOT ENOUGH ARGUMENTS\r\n";
+      send(client_socket,response.c_str(),response.length(),0);
+      return;
+    }
+    else{
+      std::string command1 = commands[1];
+      std::string command2 = commands[2];
+      toLowercase(command1);
+      toLowercase(command2);
+      try{
+        if(command1 == "listening-port"){ //handshake pt1
+          std::string response = "+OK\r\n";
+          send(client_socket, response.c_str(), response.length(),0);
+          return;
+        }
+        else if(command1 == "capa"){ //handshake pt2
+          std::string response = "+OK\r\n";
+          send(client_socket, response.c_str(), response.length(),0);
+          return;
+        }
+      }
+      catch(const std::invalid_argument&){
+        std::string response = "-ERR Replication ERROR - NOT ENOUGH ARGUMENTS\r\n";
+        send(client_socket,response.c_str(),response.length(),0);
+        return;
+      }
+    }
+  } 
+
   else{
     std::cout << "Sending error response to client\n";
     std::string response = "-ERR Invalid command\r\n";
@@ -569,6 +605,98 @@ std::vector<std::string> Server::generateCommands(const char charBuffer[1024]){
     delete wordIndex;
   }
   return commandList;
+}
+void Server::sendHandshake(){ //so this is done when --replicaof flag is detected basically
+  sockaddr_in master_addr;
+  master_addr.sin_family = AF_INET;
+  master_addr.sin_port = htons(masterPort);
+  if (InetPton(AF_INET, masterHost.c_str(), &master_addr.sin_addr) != 1) {
+        std::cerr << "Invalid IP address: " << masterHost << std::endl;
+        return;
+  }
+ // master_addr.sin_addr.s_addr = inet_addr(masterHost.c_str()); //won't work for localhost !!
+  SOCKET master_fd = socket(AF_INET, SOCK_STREAM,0);
+  if (master_fd == INVALID_SOCKET) {
+        std::cerr << "Socket creation failed with error: " << WSAGetLastError() << std::endl;
+        return;
+  }
+  if(connect(master_fd, (struct sockaddr*)&master_addr, sizeof(master_addr))==0){
+
+    //todo - stack to keep track of previous command for the master server, to know if the handshake sequence has been followed or not
+    //and subsequently, a list of follower/slave servers to propagate to (check if list is empty -> if not, then send the command to each server on the list)
+
+    std::cout <<"Connection succeeded.";
+    std::string PING = "*1\r\n$4\r\nPING\r\n";
+    std::string REPLCONF_1 = "*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n$4\r\n" + std::to_string(port) + "\r\n";
+    std::string REPLCONF_2 = "*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n"; //temporarily (?) hardcoded
+    std::string PSYNC = "*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n";
+    send(master_fd, PING.c_str(), PING.size(), 0);
+    char ipStr[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &master_addr.sin_addr, ipStr, INET_ADDRSTRLEN);
+    std::cout << "Sent PING to " << ipStr << " at port " << masterPort << std::endl;
+    char buffer[1024];
+    //ping
+    int bytesReceived = recv(master_fd, buffer, sizeof(buffer)-1,0);
+    if(bytesReceived > 0){
+      std::string response(buffer,bytesReceived);
+      //std::cout << buffer;
+      if(response =="+PONG\r\n"){std::cout <<"PING 1 - OK";}
+      else{
+        std::cerr << "ERROR: OK not received from master.";
+        return;
+      }
+    }
+    else{std::cerr << "INVALID RESPONSE FROM MASTER"; return;}
+   
+    //replconf1
+    send(master_fd, REPLCONF_1.c_str(), REPLCONF_1.size(),0);
+    bytesReceived = recv(master_fd, buffer, sizeof(buffer)-1,0);
+    if(bytesReceived > 0){
+      std::string response(buffer,bytesReceived);
+      if(response =="+OK\r\n"){std::cout <<"REPLCONF 1 - OK";}
+      else{
+        std::cerr << "ERROR: OK not received from master.";
+        return;
+      }
+    }
+    else{
+    std::cerr << "INVALID RESPONSE FROM MASTER";
+      return;
+    }
+    //replconf2
+    send(master_fd, REPLCONF_2.c_str(), REPLCONF_2.size(),0);
+    bytesReceived = recv(master_fd, buffer, sizeof(buffer)-1,0);
+    if(bytesReceived > 0){
+      std::string response(buffer,bytesReceived);
+      if(response =="+OK\r\n"){std::cout <<"REPLCONF 2 - OK";}
+      else{
+        std::cerr << "ERROR: OK not received from master."; 
+        return;
+      }
+    }
+    else{
+      std::cerr << "INVALID RESPONSE FROM MASTER"; 
+      return;
+    }
+    //psync
+    send(master_fd, PSYNC.c_str(), PSYNC.size(),0);
+    bytesReceived = recv(master_fd, buffer, sizeof(buffer)-1,0);
+    if(bytesReceived > 0){
+      std::string response(buffer,bytesReceived);
+      if(response =="+OK\r\n"){std::cout <<"PSYNC - OK";}
+      else{
+        std::cerr << "ERROR: OK not received from master."; 
+        return;
+      }
+    }
+    else{
+      std::cerr << "INVALID RESPONSE FROM MASTER";
+      return;
+    }
+  }
+  else{
+    std::cerr << "ERROR: Could not connect to master, is the master server running? Error: " << WSAGetLastError() << std::endl;
+  }
 }
 
 

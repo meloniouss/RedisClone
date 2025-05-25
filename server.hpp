@@ -50,6 +50,7 @@ private:
 	RdbSize getSize(std::string* fileContents, size_t* cursor);
 	void handleDbRead(std::string* fileContents, size_t* cursor);
 	void loadRDBfile(std::string dir, std::string dbfilename);
+	void sendHandshake();
 	std::vector<std::string> generateCommands(const char charBuffer[1024]);
 	std::string handleIndividualWord(const char charBuffer[1024], int* wordIndex);
 	std::string fetchKeys(std::string key);
