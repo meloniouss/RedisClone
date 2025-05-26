@@ -20,6 +20,12 @@ private:
 	std::string ip;
 	int port;
 	};
+	enum class Handshake_Stage {
+	PING,
+	REPLCONF1,
+	REPLCONF2,
+	PSYNC,
+	};
 public:
 	ReplicationInfo replInfo;
 	Server() : port(6379){};//default
@@ -31,6 +37,8 @@ public:
 	std::string getMasterHost() const { return masterHost; }
 	int getMasterPort() const { return masterPort; }
 	std::vector<SlaveInfo> connectedSlaves;
+	std::unordered_map<int, Handshake_Stage> replicaHandshakeMap;
+
 private:
 	struct RdbSize{
 		bool special_encoding;

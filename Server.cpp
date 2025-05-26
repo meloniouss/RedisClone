@@ -407,6 +407,8 @@ void Server::sendData(const std::vector<std::string> &commands, int client_socke
     }
   }
   else if(mainCommand == "ping"){
+    //add the client socket to the handshake map?
+    replicaHandshakeMap[client_socket] = Handshake_Stage::PING;
     std::string response = "+PONG\r\n";
     send(client_socket, response.c_str(), response.length(),0);
   }
@@ -534,14 +536,20 @@ void Server::sendData(const std::vector<std::string> &commands, int client_socke
       toLowercase(command1);
       toLowercase(command2);
       try{
-        if(command1 == "listening-port"){ //handshake pt1
+        if(command1 == "listening-port" && replicaHandshakeMap.find(client_socket) != replicaHandshakeMap.end() && replicaHandshakeMap[client_socket] == Handshake_Stage::PING){ //handshake pt1
           std::string response = "+OK\r\n";
           send(client_socket, response.c_str(), response.length(),0);
+          replicaHandshakeMap[client_socket] = Handshake_Stage::REPLCONF1;
           return;
         }
-        else if(command1 == "capa"){ //handshake pt2
+        else if(command1 == "capa" && replicaHandshakeMap.find(client_socket) != replicaHandshakeMap.end() &&replicaHandshakeMap[client_socket] == Handshake_Stage::REPLCONF1){ //handshake pt2
           std::string response = "+OK\r\n";
           send(client_socket, response.c_str(), response.length(),0);
+          replicaHandshakeMap[client_socket] = Handshake_Stage::REPLCONF2;
+          return;
+        }
+        else{
+          std::cerr << "INVALID HANDSHAKE FROM FOLLOWER DB";  
           return;
         }
       }
@@ -559,11 +567,16 @@ void Server::sendData(const std::vector<std::string> &commands, int client_socke
       std::cout << "Error response sent(PSYNC)\n";
       return;
     } 
-    if(commands[1] == "?" && commands[2] == "-1"){ //must be slave
+    if(commands[1] == "?" && commands[2] == "-1" && replicaHandshakeMap.find(client_socket) != replicaHandshakeMap.end() && replicaHandshakeMap[client_socket] == Handshake_Stage::REPLCONF2){ //must be slave
       return_data.str("");
       return_data.clear();
       return_data << "+FULLRESYNC " << replInfo.master_replid << " 0\r\n";
       send(client_socket, return_data.str().c_str(), return_data.str().length(),0);
+      replicaHandshakeMap[client_socket] = Handshake_Stage::PSYNC;
+      //for testing purposes
+      for (const auto& [socket, stage] : replicaHandshakeMap) {
+      std::cout << "Socket: " << socket << " -> Handshake Stage: " << static_cast<int>(stage) << '\n';
+      }
       return;
     }
     else{
