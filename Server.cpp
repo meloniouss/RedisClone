@@ -552,7 +552,27 @@ void Server::sendData(const std::vector<std::string> &commands, int client_socke
       }
     }
   } 
-
+  else if(mainCommand == "psync"){
+    if(replInfo.role != "master" || commands.size() < 3){
+      std::string response = "-ERR Invalid command\r\n";
+      send(client_socket, response.c_str(), response.length(), 0);
+      std::cout << "Error response sent(PSYNC)\n";
+      return;
+    } 
+    if(commands[1] == "?" && commands[2] == "-1"){ //must be slave
+      return_data.str("");
+      return_data.clear();
+      return_data << "+FULLRESYNC " << replInfo.master_replid << " 0\r\n";
+      send(client_socket, return_data.str().c_str(), return_data.str().length(),0);
+      return;
+    }
+    else{
+     std::string response = "-ERR Invalid arguments for command PSYNC\r\n";
+      send(client_socket, response.c_str(), response.length(), 0);
+      std::cout << "Error response sent(PSYNC args)\n";
+      return;
+    }
+  }
   else{
     std::cout << "Sending error response to client\n";
     std::string response = "-ERR Invalid command\r\n";
@@ -614,7 +634,6 @@ void Server::sendHandshake(){ //so this is done when --replicaof flag is detecte
         std::cerr << "Invalid IP address: " << masterHost << std::endl;
         return;
   }
- // master_addr.sin_addr.s_addr = inet_addr(masterHost.c_str()); //won't work for localhost !!
   SOCKET master_fd = socket(AF_INET, SOCK_STREAM,0);
   if (master_fd == INVALID_SOCKET) {
         std::cerr << "Socket creation failed with error: " << WSAGetLastError() << std::endl;
@@ -622,9 +641,7 @@ void Server::sendHandshake(){ //so this is done when --replicaof flag is detecte
   }
   if(connect(master_fd, (struct sockaddr*)&master_addr, sizeof(master_addr))==0){
 
-    //todo - stack to keep track of previous command for the master server, to know if the handshake sequence has been followed or not
-    //and subsequently, a list of follower/slave servers to propagate to (check if list is empty -> if not, then send the command to each server on the list)
-
+    //to-do: tracking sockets and individual handshake progress for concurrency
     std::cout <<"Connection succeeded.";
     std::string PING = "*1\r\n$4\r\nPING\r\n";
     std::string REPLCONF_1 = "*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n$4\r\n" + std::to_string(port) + "\r\n";
@@ -640,7 +657,7 @@ void Server::sendHandshake(){ //so this is done when --replicaof flag is detecte
     if(bytesReceived > 0){
       std::string response(buffer,bytesReceived);
       //std::cout << buffer;
-      if(response =="+PONG\r\n"){std::cout <<"PING 1 - OK";}
+      if(response =="+PONG\r\n"){std::cout <<"PING - OK\r\n";}
       else{
         std::cerr << "ERROR: OK not received from master.";
         return;
@@ -653,7 +670,7 @@ void Server::sendHandshake(){ //so this is done when --replicaof flag is detecte
     bytesReceived = recv(master_fd, buffer, sizeof(buffer)-1,0);
     if(bytesReceived > 0){
       std::string response(buffer,bytesReceived);
-      if(response =="+OK\r\n"){std::cout <<"REPLCONF 1 - OK";}
+      if(response =="+OK\r\n"){std::cout <<"REPLCONF 1 - OK\r\n";}
       else{
         std::cerr << "ERROR: OK not received from master.";
         return;
@@ -668,7 +685,7 @@ void Server::sendHandshake(){ //so this is done when --replicaof flag is detecte
     bytesReceived = recv(master_fd, buffer, sizeof(buffer)-1,0);
     if(bytesReceived > 0){
       std::string response(buffer,bytesReceived);
-      if(response =="+OK\r\n"){std::cout <<"REPLCONF 2 - OK";}
+      if(response =="+OK\r\n"){std::cout <<"REPLCONF 2 - OK\r\n";}
       else{
         std::cerr << "ERROR: OK not received from master."; 
         return;
@@ -678,12 +695,17 @@ void Server::sendHandshake(){ //so this is done when --replicaof flag is detecte
       std::cerr << "INVALID RESPONSE FROM MASTER"; 
       return;
     }
+
     //psync
     send(master_fd, PSYNC.c_str(), PSYNC.size(),0);
     bytesReceived = recv(master_fd, buffer, sizeof(buffer)-1,0);
     if(bytesReceived > 0){
       std::string response(buffer,bytesReceived);
-      if(response =="+OK\r\n"){std::cout <<"PSYNC - OK";}
+      if(response.substr(0,11) == "+FULLRESYNC" && response.size() == 56){ //len of fullresync + _replid_ + offset\r\n
+        std::cout << "PSYNC - OK\r\n";
+        std::cout << "HANDSHAKE COMPLETE\r\n";
+        return;
+      }
       else{
         std::cerr << "ERROR: OK not received from master."; 
         return;
