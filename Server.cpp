@@ -577,6 +577,12 @@ void Server::sendData(const std::vector<std::string> &commands, int client_socke
       for (const auto& [socket, stage] : replicaHandshakeMap) {
       std::cout << "Socket: " << socket << " -> Handshake Stage: " << static_cast<int>(stage) << '\n';
       }
+      std::string emptyFile = "524544495330303131fa0972656469732d76657205372e322e30fa0a72656469732d62697473c040fa056374696d65c26d08bc65fa08757365642d6d656dc2b0c41000fa08616f662d62617365c000fff06e3bfec0ff5aa2";
+      return_data.str("");
+      return_data.clear();
+      return_data << "$" << std::to_string(emptyFile.size()) << "\r\n" << emptyFile;
+      std::string secondResponse = return_data.str();
+      send(client_socket, secondResponse.c_str(), secondResponse.length(),0);
       return;
     }
     else{
@@ -653,8 +659,6 @@ void Server::sendHandshake(){ //so this is done when --replicaof flag is detecte
         return;
   }
   if(connect(master_fd, (struct sockaddr*)&master_addr, sizeof(master_addr))==0){
-
-    //to-do: tracking sockets and individual handshake progress for concurrency
     std::cout <<"Connection succeeded.";
     std::string PING = "*1\r\n$4\r\nPING\r\n";
     std::string REPLCONF_1 = "*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n$4\r\n" + std::to_string(port) + "\r\n";
@@ -727,6 +731,18 @@ void Server::sendHandshake(){ //so this is done when --replicaof flag is detecte
     else{
       std::cerr << "INVALID RESPONSE FROM MASTER";
       return;
+    }
+    bytesReceived = recv(master_fd, buffer, sizeof(buffer)-1,0);
+    if(bytesReceived > 0){ // this doesnt work for some reason lol
+      std::string response(buffer,bytesReceived);
+      std::cout << response;
+      //fix parsing here
+      if(response == "$176\r\n524544495330303131fa0972656469732d76657205372e322e30fa0a72656469732d62697473c040fa056374696d65c26d08bc65fa08757365642d6d656dc2b0c41000fa08616f662d62617365c000fff06e3bfec0ff5aa2"){
+        std::cout << "EMPTY RDB TRANSFER COMPLETE\r\n";
+      }
+    }
+    else{
+      std::cout << "didnt receive empty file";
     }
   }
   else{

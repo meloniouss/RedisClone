@@ -38,7 +38,6 @@ public:
 	int getMasterPort() const { return masterPort; }
 	std::vector<SlaveInfo> connectedSlaves;
 	std::unordered_map<int, Handshake_Stage> replicaHandshakeMap;
-
 private:
 	struct RdbSize{
 		bool special_encoding;
