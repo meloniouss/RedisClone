@@ -51,6 +51,7 @@ private:
 	std::unordered_map<std::string, keyInfo> dataStore;
 	std::string dir;
 	std::string dbfilename;
+	std::vector<int> CLIENT_SOCKET_LIST;
 	int port;
 	std::string masterHost;
 	int masterPort;
@@ -58,7 +59,7 @@ private:
 	void handleDbRead(std::string* fileContents, size_t* cursor);
 	void loadRDBfile(std::string dir, std::string dbfilename);
 	void sendHandshake();
-	std::vector<std::string> generateCommands(const char charBuffer[1024]);
+	std::vector<std::string> generateCommands(const char* charBuffer, size_t length);
 	std::string handleIndividualWord(const char charBuffer[1024], int* wordIndex);
 	std::string fetchKeys(std::string key);
 	void sendData(const std::vector<std::string> &commands, int client_socket);

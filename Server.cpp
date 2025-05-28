@@ -1,4 +1,5 @@
 #include <iostream>
+#include <stdexcept>
 #include <ws2tcpip.h>
 #include <filesystem>
 #include <fstream>
@@ -10,6 +11,7 @@
 #include <unordered_map>
 #include <chrono>
 #include <regex>
+#include <thread>
 #include "server.hpp"
 
 void Server::setKey(std::string key, std::string value, std::string ttl)
@@ -272,6 +274,7 @@ void Server::generateVars(int argc, char* argv[]){
         replInfo.master_repl_offset = 0;
     }
 }
+
 void Server::run() {
   if(!dir.empty() && !dbfilename.empty()) loadRDBfile(dir,dbfilename);
   // boilerplate
@@ -311,7 +314,6 @@ void Server::run() {
   
   if(replInfo.role == "slave"){sendHandshake();}
 
-  std::vector<int> CLIENT_SOCKET_LIST;
   bool running = true;
   FD_SET clientSet;
   FD_ZERO(&clientSet);
@@ -349,7 +351,7 @@ void Server::run() {
             closesocket(client_socket);
             break;
           }
-          std::vector<std::string> commands = generateCommands(buffer);
+          std::vector<std::string> commands = generateCommands(buffer,data_received);
           std::cout << "Generated commands are: " << std::endl;
           for (const auto& command : commands) {
             std::cout << command << std::endl;
@@ -363,7 +365,9 @@ void Server::run() {
   WSACleanup();
   return;
 }
-
+void propagateCommands(int socket, const std::string& data){
+  send(socket, data.c_str(), data.size(),0);
+}
 void toLowercase(std::string& str) {
     std::transform(str.begin(), str.end(), str.begin(), [](unsigned char c) { return std::tolower(c); });
 }
@@ -419,24 +423,54 @@ void Server::sendData(const std::vector<std::string> &commands, int client_socke
       return;
     }
     try{
-      std::string optionalCommand = commands[3]; toLowercase(optionalCommand);
-      if(commands.size() >= 5 && std::stoi(commands[4]) > 0 && optionalCommand == "px"){//with expiry
-        std::cout << "Setting key with expiry: " 
-                << "Key: " << commands[1] 
-                << ", Value: " << commands[2] 
-                << ", Expiry: " << commands[4] << "ms" 
-                << std::endl; 
-        setKey(commands[1],commands[2],commands[4]);
+      if(commands.size() == 5){
+        std::string optionalCommand = commands[3]; toLowercase(optionalCommand);
+        if(std::stoi(commands[4]) > 0 && optionalCommand == "px"){//with expiry
+          std::cout << "Setting key with expiry: " 
+                  << "Key: " << commands[1] 
+                  << ", Value: " << commands[2] 
+                  << ", Expiry: " << commands[4] << "ms" 
+                  << std::endl; 
+          setKey(commands[1],commands[2],commands[4]);
+        }
+        else{ // no expiry
+          std::string response = "-ERR invalid PX arguments for 'SET'\r\n"; // BUG HERE?
+          send(client_socket, response.c_str(), response.length(),0);
+          return;
+        }
       }
-      else{ // no expiry
+      else if(commands.size() == 3){
         setKey(commands[1],commands[2],std::to_string(-1)); // -1 -> special value, if -1, treated as having no ttl
       }
+      else{throw std::invalid_argument("err");}
      std::string response = "+OK\r\n"; 
-     send(client_socket, response.c_str(), response.length(),0);
+     send(client_socket, response.c_str(), response.length(),0); //send to user
+     // !!! command propagation
+      std::stringstream propagatedResponse;
+     if(commands.size() == 3){ //no ttl
+      propagatedResponse <<"*3\r\n$3\r\nSET\r\n" << "$" << std::to_string(commands[1].size()) << "\r\n" << commands[1] << "\r\n" << "$" << std::to_string(commands[2].size()) << "\r\n" << commands[2] << "\r\n";
+            std::cout << "PROPAGATED: " << propagatedResponse.str();
+     }
+     else if(commands.size() == 5){ 
+      propagatedResponse <<"*3\r\n$3\r\nSET\r\n" << "$" << std::to_string(commands[1].size()) << "\r\n" << commands[1] << "\r\n" << "$" << std::to_string(commands[2].size()) << "\r\n" << commands[2] << "\r\n" << "$2\r\nPX\r\n" << "$" << commands[4].size() << "\r\n" << commands[4] << "\r\n"; 
+          std::cout << "PROPAGATED: " << propagatedResponse.str();
+      }
+     else{
+      throw std::invalid_argument("err"); 
+     }
+      std::string data = propagatedResponse.str();
+      for (const auto& [socket, _] : replicaHandshakeMap) {
+        std::cout << "PROPAGATING TO SOCKET " << socket << std::endl;
+        int bytesSent = send(socket, data.c_str(), data.size(), 0);
+        if (bytesSent < 0) {
+            std::cerr << "Failed to send to socket " << socket << ": " << strerror(errno) << std::endl;
+        }
+      }
     }
     catch(const std::invalid_argument&){
-      std::string response = "-ERR invalid PX arguments for 'SET'\r\n";
+      std::string response = "-ERR invalid PX arguments for 'SET'\r\n"; // BUG HERE?
       send(client_socket, response.c_str(), response.length(),0);
+      return;
     }
   }
   else if(mainCommand == "get"){
@@ -577,12 +611,12 @@ void Server::sendData(const std::vector<std::string> &commands, int client_socke
       for (const auto& [socket, stage] : replicaHandshakeMap) {
       std::cout << "Socket: " << socket << " -> Handshake Stage: " << static_cast<int>(stage) << '\n';
       }
-      std::string emptyFile = "524544495330303131fa0972656469732d76657205372e322e30fa0a72656469732d62697473c040fa056374696d65c26d08bc65fa08757365642d6d656dc2b0c41000fa08616f662d62617365c000fff06e3bfec0ff5aa2";
-      return_data.str("");
-      return_data.clear();
-      return_data << "$" << std::to_string(emptyFile.size()) << "\r\n" << emptyFile;
-      std::string secondResponse = return_data.str();
-      send(client_socket, secondResponse.c_str(), secondResponse.length(),0);
+     // std::string emptyFile = "524544495330303131fa0972656469732d76657205372e322e30fa0a72656469732d62697473c040fa056374696d65c26d08bc65fa08757365642d6d656dc2b0c41000fa08616f662d62617365c000fff06e3bfec0ff5aa2";
+      //return_data.str("");
+      //return_data.clear();
+      //return_data << "$" << std::to_string(emptyFile.size()) << "\r\n" << emptyFile;
+      //std::string secondResponse = return_data.str();
+      //send(client_socket, secondResponse.c_str(), secondResponse.length(),0);
       return;
     }
     else{
@@ -624,8 +658,8 @@ std::string Server::handleIndividualWord(const char charBuffer[1024], int* wordI
   return builder.str();
 }
   
-std::vector<std::string> Server::generateCommands(const char charBuffer[1024]){
-  std::cout << "Received Buffer: \n" << charBuffer << std::endl;
+std::vector<std::string> Server::generateCommands(const char* charBuffer, size_t length){
+  std::cout << "Received Buffer: \n" << charBuffer << "on port " << port <<std::endl;
   std::vector<std::string> commandList;
   if(charBuffer[0] == '*'){
 
@@ -721,6 +755,7 @@ void Server::sendHandshake(){ //so this is done when --replicaof flag is detecte
       if(response.substr(0,11) == "+FULLRESYNC" && response.size() == 56){ //len of fullresync + _replid_ + offset\r\n
         std::cout << "PSYNC - OK\r\n";
         std::cout << "HANDSHAKE COMPLETE\r\n";
+        CLIENT_SOCKET_LIST.push_back(master_fd);
         return;
       }
       else{
@@ -732,18 +767,18 @@ void Server::sendHandshake(){ //so this is done when --replicaof flag is detecte
       std::cerr << "INVALID RESPONSE FROM MASTER";
       return;
     }
-    bytesReceived = recv(master_fd, buffer, sizeof(buffer)-1,0);
-    if(bytesReceived > 0){ // this doesnt work for some reason lol
-      std::string response(buffer,bytesReceived);
-      std::cout << response;
+    //bytesReceived = recv(master_fd, buffer, sizeof(buffer)-1,0);
+    //if(bytesReceived > 0){ // this doesnt work for some reason lol
+     // std::string response(buffer,bytesReceived);
+      //std::cout << response;
       //fix parsing here
-      if(response == "$176\r\n524544495330303131fa0972656469732d76657205372e322e30fa0a72656469732d62697473c040fa056374696d65c26d08bc65fa08757365642d6d656dc2b0c41000fa08616f662d62617365c000fff06e3bfec0ff5aa2"){
-        std::cout << "EMPTY RDB TRANSFER COMPLETE\r\n";
-      }
-    }
-    else{
-      std::cout << "didnt receive empty file";
-    }
+     // if(response == "$176\r\n524544495330303131fa0972656469732d76657205372e322e30fa0a72656469732d62697473c040fa056374696d65c26d08bc65fa08757365642d6d656dc2b0c41000fa08616f662d62617365c000fff06e3bfec0ff5aa2"){
+      //  std::cout << "EMPTY RDB TRANSFER COMPLETE\r\n";
+      //}
+    //}
+    //else{
+     // std::cout << "didnt receive empty file";
+    //}
   }
   else{
     std::cerr << "ERROR: Could not connect to master, is the master server running? Error: " << WSAGetLastError() << std::endl;
