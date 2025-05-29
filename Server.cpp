@@ -443,29 +443,37 @@ void Server::sendData(const std::vector<std::string> &commands, int client_socke
         setKey(commands[1],commands[2],std::to_string(-1)); // -1 -> special value, if -1, treated as having no ttl
       }
       else{throw std::invalid_argument("err");}
-     std::string response = "+OK\r\n"; 
-     send(client_socket, response.c_str(), response.length(),0); //send to user
-     // !!! command propagation
-      std::stringstream propagatedResponse;
+     std::string response = "+OK\r\n";
+     if(replInfo.role == "master"){
+      send(client_socket, response.c_str(), response.length(),0); //send to user
+     }
+     std::stringstream propagatedResponse;
      if(commands.size() == 3){ //no ttl
       propagatedResponse <<"*3\r\n$3\r\nSET\r\n" << "$" << std::to_string(commands[1].size()) << "\r\n" << commands[1] << "\r\n" << "$" << std::to_string(commands[2].size()) << "\r\n" << commands[2] << "\r\n";
             std::cout << "PROPAGATED: " << propagatedResponse.str();
      }
      else if(commands.size() == 5){ 
-      propagatedResponse <<"*3\r\n$3\r\nSET\r\n" << "$" << std::to_string(commands[1].size()) << "\r\n" << commands[1] << "\r\n" << "$" << std::to_string(commands[2].size()) << "\r\n" << commands[2] << "\r\n" << "$2\r\nPX\r\n" << "$" << commands[4].size() << "\r\n" << commands[4] << "\r\n"; 
-          std::cout << "PROPAGATED: " << propagatedResponse.str();
-      }
+      propagatedResponse <<"*5\r\n$3\r\nSET\r\n" << "$" << std::to_string(commands[1].size()) << "\r\n" << commands[1] << "\r\n" << "$" << std::to_string(commands[2].size()) << "\r\n" << commands[2] << "\r\n" << "$2\r\nPX\r\n" << "$" << commands[4].size() << "\r\n" << commands[4] << "\r\n"; 
+          std::cout << "PROPAGATED: " << propagatedResponse.str() << "WITH EXPIRATION";
+          
+     }
      else{
       throw std::invalid_argument("err"); 
      }
-      std::string data = propagatedResponse.str();
-      for (const auto& [socket, _] : replicaHandshakeMap) {
-        std::cout << "PROPAGATING TO SOCKET " << socket << std::endl;
-        int bytesSent = send(socket, data.c_str(), data.size(), 0);
-        if (bytesSent < 0) {
+      if(replInfo.role == "master"){
+        std::string data = propagatedResponse.str();
+        for (const auto& [socket, _] : replicaHandshakeMap) {
+          std::cout << "PROPAGATING TO SOCKET " << socket << std::endl;
+          int bytesSent = send(socket, data.c_str(), data.size(), 0);
+          if (bytesSent < 0) {
             std::cerr << "Failed to send to socket " << socket << ": " << strerror(errno) << std::endl;
+          }
         }
       }
+      else{
+        std::cerr << "replica -> not propagating" << std::endl;
+        return;
+      };
     }
     catch(const std::invalid_argument&){
       std::string response = "-ERR invalid PX arguments for 'SET'\r\n"; // BUG HERE?
@@ -659,7 +667,7 @@ std::string Server::handleIndividualWord(const char charBuffer[1024], int* wordI
 }
   
 std::vector<std::string> Server::generateCommands(const char* charBuffer, size_t length){
-  std::cout << "Received Buffer: \n" << charBuffer << "on port " << port <<std::endl;
+  //std::cout << "Received Buffer: \n" << charBuffer << "on port " << port <<std::endl;
   std::vector<std::string> commandList;
   if(charBuffer[0] == '*'){
 
